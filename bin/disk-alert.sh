@@ -156,4 +156,77 @@ clear_alert() {
     fi
 }
 
+# growth_for <mount> <current_used_kb>
+#
+# Compares the current used space with the previous reading.
+# Stores the current reading for the next run.
+growth_for() {
+    local mount="$1"
+    local used_kb="$2"
 
+    local hist="${STATE_DIR}/$(state_key "$mount").history"
+    local prev_time prev_used delta_kb delta_sec rate
+
+    if [[ -f "$hist" ]]; then
+        read -r prev_time prev_used < "$hist"
+
+        delta_sec=$(( NOW - prev_time ))
+        delta_kb=$(( used_kb - prev_used ))
+
+        if (( delta_sec > 0 )); then
+            rate=$(awk \
+                -v k="$delta_kb" \
+                -v s="$delta_sec" \
+                'BEGIN { printf "%.2f", (k/1048576) / (s/3600) }')
+
+            printf 'changed %+.2f GB in %d min (%.2f GB/hour)' \
+                "$(awk -v k="$delta_kb" 'BEGIN { print k/1048576 }')" \
+                "$(( delta_sec / 60 ))" \
+                "$rate"
+        fi
+    else
+        printf 'no previous reading'
+    fi
+
+    printf '%s %s\n' "$NOW" "$used_kb" > "$hist"
+}
+
+# top_consumers <mount>
+#
+# Shows the largest directories and files under a mount,
+# plus deleted-but-open files that still consume disk space.
+top_consumers() {
+    local mount="$1"
+
+    echo " Largest directories under ${mount}:"
+
+    du -xh --max-depth=2 "$mount" 2>/dev/null \
+        | sort -rh \
+        | head -n "${TOP_DIRS:-5}" \
+        | while read -r size path; do
+            printf ' %-8s %s\n' "$size" "$path"
+        done
+
+    echo
+    echo " Largest files under ${mount}:"
+
+    find "$mount" -xdev -type f -printf '%s\t%p\n' 2>/dev/null \
+        | sort -rn \
+        | head -n "${TOP_FILES:-5}" \
+        | while IFS=$'\t' read -r bytes path; do
+            printf ' %-8s %s\n' \
+                "$(numfmt --to=iec --suffix=B "$bytes")" \
+                "$path"
+        done
+
+    echo
+    echo " Deleted files still held open (space not yet reclaimed):"
+
+    lsof -nP +L1 2>/dev/null \
+        | awk -v m="$mount" \
+            'NR>1 && $0 ~ m {
+                printf " %-10s %-8s %s\n", $1, $2, $NF
+            }' \
+        | head -n 5 \
+        || echo " none"
+}
