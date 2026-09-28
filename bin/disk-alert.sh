@@ -89,23 +89,71 @@ state_key() {
     echo "${1//\//_}"
 }
 
+# should_alert <mount> <severity>
+#
+# Returns:
+#   0 = yes, send an alert
+#   1 = no, suppress the alert
+#
+should_alert() {
+    local mount="$1"
+    local sev="$2"
+    local key state_file last_time last_sev age
 
-echo "BASE_DIR=$BASE_DIR"
-echo "CONFIG=$CONFIG"
-echo "LOG_FILE=$LOG_FILE"
-echo "STATE_DIR=$STATE_DIR"
-echo "HOST=$HOST"
-echo "NOW=$NOW"
+    key="$(state_key "$mount")"
+    state_file="${STATE_DIR}/${key}.state"
 
-echo
-echo "Threshold tests:"
-echo "/      -> $(thresholds_for "/")"
-echo "/var   -> $(thresholds_for "/var")"
-echo "/home  -> $(thresholds_for "/home")"
-echo "/tmp   -> $(thresholds_for "/tmp")"
+    # We have never alerted for this mount.
+    if [[ ! -f "$state_file" ]]; then
+        return 0
+    fi
 
-echo
-echo "State key tests:"
-echo "/      -> $(state_key "/")"
-echo "/var   -> $(state_key "/var")"
-echo "/var/log -> $(state_key "/var/log")"
+    read -r last_time last_sev < "$state_file"
+
+    last_time="${last_time:-0}"
+    last_sev="${last_sev:-0}"
+
+    # A severity escalation always bypasses cooldown.
+    if (( sev > last_sev )); then
+        log INFO "escalation on ${mount}: ${last_sev} -> ${sev}, alerting"
+        return 0
+    fi
+
+    age=$(( NOW - last_time ))
+
+    # Cooldown has expired.
+    if (( age >= COOLDOWN_SECONDS )); then
+        return 0
+    fi
+
+    # Still inside cooldown.
+    log INFO "suppressed ${mount} sev=${sev}, ${age}s into ${COOLDOWN_SECONDS}s cooldown"
+    return 1
+}
+
+record_alert() {
+    local mount="$1"
+    local sev="$2"
+
+    printf '%s %s\n' "$NOW" "$sev" \
+        > "${STATE_DIR}/$(state_key "$mount").state"
+}
+
+
+# Called when a previously-alerting mount
+# returns below the warning threshold.
+clear_alert() {
+    local mount="$1"
+    local state_file="${STATE_DIR}/$(state_key "$mount").state"
+
+    if [[ -f "$state_file" ]]; then
+        rm -f "$state_file"
+
+        log OK "${mount} recovered below threshold"
+
+        send_alert "RECOVERED" "$mount" \
+            "Disk usage on ${mount} has returned below the warning threshold on ${HOST}."
+    fi
+}
+
+
