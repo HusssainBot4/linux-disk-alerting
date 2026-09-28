@@ -1,0 +1,4 @@
+logs/*.log
+state/*
+reports/*
+*.tmp
