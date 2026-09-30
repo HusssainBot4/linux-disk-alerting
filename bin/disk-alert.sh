@@ -230,3 +230,52 @@ top_consumers() {
         | head -n 5 \
         || echo " none"
 }
+
+# send_alert <severity> <mount> <body>
+#
+# Sends one alert through every configured channel.
+send_alert() {
+    local severity="$1"
+    local mount="$2"
+    local body="$3"
+    local subject="[${severity}] Disk ${mount} on ${HOST}"
+    local channel
+
+    for channel in ${ALERT_CHANNELS:-log}; do
+        case "$channel" in
+            log)
+                log "$severity" "${mount} :: ${body//$'\n'/ | }"
+                ;;
+
+            email)
+                if [[ -n "${ALERT_EMAIL:-}" ]] && command -v mail >/dev/null; then
+                    printf '%s\n' "$body" | mail -s "$subject" "$ALERT_EMAIL"
+                else
+                    log WARN "email channel selected but mail or recipient missing"
+                fi
+                ;;
+
+            slack)
+                if [[ -n "${SLACK_WEBHOOK:-}" ]]; then
+                    local payload
+                    payload=$(jq -n \
+                        --arg t "$subject" \
+                        --arg b "$body" \
+                        '{ text: ($t + "\n\u0060\u0060\u0060" + $b + "\u0060\u0060\u0060") }')
+
+                    curl -sS \
+                        -X POST \
+                        -H 'Content-Type: application/json' \
+                        --max-time 10 \
+                        --data "$payload" \
+                        "$SLACK_WEBHOOK" >/dev/null \
+                        || log WARN "slack webhook call failed"
+                fi
+                ;;
+
+            *)
+                log WARN "unknown alert channel: ${channel}"
+                ;;
+        esac
+    done
+}
