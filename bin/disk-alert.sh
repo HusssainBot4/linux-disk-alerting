@@ -279,3 +279,56 @@ send_alert() {
         esac
     done
 }
+
+# check all mounted filesystems for space usage
+check_filesystems() {
+    local fs size used avail pct mount warn crit sev used_kb
+
+    while read -r fs size used_kb avail pct mount; do
+        pct="${pct%\%}"
+
+        read -r warn crit <<< "$(thresholds_for "$mount")"
+
+        sev=0
+        (( pct >= crit )) && sev=2 || { (( pct >= warn )) && sev=1; }
+
+        if (( sev == 0 )); then
+            clear_alert "$mount"
+            log INFO "${mount} at ${pct}% (warn ${warn}, crit ${crit}) — ok"
+            continue
+        fi
+
+        escalate "$sev"
+
+        local label
+        (( sev == 2 )) && label="CRITICAL" || label="WARNING"
+
+        if should_alert "$mount" "$sev"; then
+            local body
+
+            body="$(cat <<EOF
+Host : ${HOST}
+Mount : ${mount} (device ${fs})
+Usage : ${pct}% [warn ${warn}% crit ${crit}%]
+Size : ${size} Used: ${used_kb} KB Available: ${avail}
+Trend : $(growth_for "$mount" "$used_kb")
+Checked : $(date '+%F %T %Z')
+
+$(top_consumers "$mount")
+
+Suggested next steps:
+1. Confirm with: df -h ${mount} and df -i ${mount}
+2. Reclaim logs: journalctl --vacuum-size=500M
+3. Check for deleted-but-open files: lsof -nP +L1 | grep ${mount}
+4. If this mount grows predictably, review retention policy.
+EOF
+)"
+
+            send_alert "$label" "$mount" "$body"
+            record_alert "$mount" "$sev"
+        fi
+    done < <(
+        df -P -k -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null |
+        tail -n +2
+    )
+}
