@@ -367,3 +367,15 @@ for d in ${mount}/*; do echo \"\$(find \"\$d\" -xdev | wc -l) \$d\"; done | sort
 }
 
 
+main() {
+    log INFO "disk-alert starting on ${HOST}"
+
+    check_filesystems
+    check_inodes
+
+    log INFO "disk-alert finished overall=${OVERALL}"
+
+    exit "$OVERALL"
+}
+
+main "$@"
