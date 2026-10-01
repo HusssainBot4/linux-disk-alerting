@@ -332,3 +332,38 @@ EOF
         tail -n +2
     )
 }
+
+
+# check all mounted filesystems for inode usage
+check_inodes() {
+    local fs inodes iused ifree pct mount sev
+
+    while read -r fs inodes iused ifree pct mount; do
+        pct="${pct%\%}"
+
+        [[ "$pct" == "-" ]] && continue
+
+        sev=0
+        (( pct >= ${INODE_CRIT:-90} )) && sev=2 \
+        || { (( pct >= ${INODE_WARN:-80} )) && sev=1; }
+
+        (( sev == 0 )) && continue
+
+        escalate "$sev"
+
+        if should_alert "${mount}#inode" "$sev"; then
+            send_alert "INODE" "$mount" \
+            "Inode usage on ${mount} is at ${pct}% (${iused} used, ${ifree} free) on ${HOST}.
+The filesystem may refuse new files even though space appears available.
+Find the directories with the most entries:
+for d in ${mount}/*; do echo \"\$(find \"\$d\" -xdev | wc -l) \$d\"; done | sort -rn | head"
+
+            record_alert "${mount}#inode" "$sev"
+        fi
+    done < <(
+        df -P -i -x tmpfs -x devtmpfs 2>/dev/null |
+        tail -n +2
+    )
+}
+
+
